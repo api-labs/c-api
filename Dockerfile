@@ -3,7 +3,7 @@ FROM silkeh/clang:10 as builder
 WORKDIR /usr/src/c-api
 COPY server.c server.c
 
-RUN clang server.c -pthread -o server
+RUN clang -O3 server.c -pthread -o server
 
 FROM debian:buster
 

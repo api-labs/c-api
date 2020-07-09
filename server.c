@@ -1,4 +1,5 @@
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,87 +14,115 @@ struct thread_args {
 	int socket;
 };
 
+#define check(expr) if (!(expr)) { perror(#expr); exit(EXIT_FAILURE); }
+
+void enable_keepalive(int sock) {
+    int yes = 1;
+    check(setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(int)) != -1);
+
+    int idle = 30;
+    check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(int)) != -1);
+
+    int interval = 1;
+    check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(int)) != -1);
+
+    int maxpkt = 10;
+    check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(int)) != -1);
+}
+
 void* handle_request(void *args) {
 	struct thread_args *socket_args = args;
 	int socket = socket_args->socket;
 	long valread;
 
-	char buffer[30000] = {0};
-	valread = read(socket, buffer, 30000);
-	char *save_ptr_1, *save_ptr_2, *save_ptr_3;
-	char *request_line = strtok_r(buffer, "\n", &save_ptr_1);
-	char *request_method = strtok_r(request_line, " ", &save_ptr_2);
-	if (strncmp(request_method, "GET", 3) != 0)
+	enable_keepalive(socket);
+
+
+	while (1)
 	{
-		perror("Method not implemented");
-		exit(EXIT_FAILURE);
-	}
-	char *request_target = strtok_r(NULL, " ", &save_ptr_2);
-	if (request_target[0] != '/')
-	{
-		perror("Doesn't seem to be a valid URL");
-		exit(EXIT_FAILURE);
-	}
+		char buffer[30000] = {0};
+		valread = read(socket, buffer, 30000);
 
-	if (strlen(request_target) == 1) 
-	{
-		char *response = "HTTP/1.1 200 OK\nContent-Type: text/plain\nContent-Length: 0\n\n";
-		write(socket, response, strlen(response));
-		close(socket);
-		free(socket_args);
-
-		return NULL;
-	}
-
-	struct timespec ts;
-	timespec_get(&ts, TIME_UTC);
-	unsigned long time_recv = ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-
-	char *request_query = strtok_r(request_target, "?", &save_ptr_3);
-	request_query = strtok_r(NULL, "&", &save_ptr_3);
-	char *message;
-	char *time_sent;
-	char *id;
-	while (request_query != NULL)
-	{
-		char *save_ptr_4 = NULL;
-		char *key = strtok_r(request_query, "=", &save_ptr_4);
-		char *val = strtok_r(NULL, "\0", &save_ptr_4);
-
-		if (strncmp(key, "id", 2) == 0)
+		if (valread <= 0)
 		{
-			id = val;
+			close(socket);
+			free(socket_args);
+			return NULL;
 		}
-		else if (strncmp(key, "payload", 7) == 0)
+		char *save_ptr_1, *save_ptr_2, *save_ptr_3;
+		char *request_line = strtok_r(buffer, "\n", &save_ptr_1);
+		char *request_method = strtok_r(request_line, " ", &save_ptr_2);
+		if (strncmp(request_method, "GET", 3) != 0)
 		{
-			message = val;
+			perror("Method not implemented");
+			exit(EXIT_FAILURE);
 		}
-		else if (strncmp(key, "time_sent", 9) == 0)
+		char *request_target = strtok_r(NULL, " ", &save_ptr_2);
+		if (request_target[0] != '/')
 		{
-			time_sent = val;
-		}
-		else if (strncmp(key, "sleep_intv", 10) == 0)
-		{
-			sleep(atoi(val) / 1000.0);
+			perror("Doesn't seem to be a valid URL");
+			exit(EXIT_FAILURE);
 		}
 
+		if (strlen(request_target) == 1) 
+		{
+			char *response = "HTTP/1.1 200 OK\nConnection: keep-alive\nKeep-Alive: timeout=30\nContent-Type: text/plain\nContent-Length: 0\n\n";
+			write(socket, response, strlen(response));
+			continue;
+		}
+		// else
+		// {
+		// 	char *response = "HTTP/1.1 200 OK\nConnection: keep-alive\nKeep-Alive: timeout=5\nContent-Type: text/plain\nContent-Length: 0\n\n";
+		// 	write(socket, response, strlen(response));
+		// }
+
+		struct timespec ts;
+		timespec_get(&ts, TIME_UTC);
+		unsigned long time_recv = ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+
+		char *request_query = strtok_r(request_target, "?", &save_ptr_3);
 		request_query = strtok_r(NULL, "&", &save_ptr_3);
+		char *message;
+		char *time_sent;
+		char *id;
+		while (request_query != NULL)
+		{
+			char *save_ptr_4 = NULL;
+			char *key = strtok_r(request_query, "=", &save_ptr_4);
+			char *val = strtok_r(NULL, "\0", &save_ptr_4);
+
+			if (strncmp(key, "id", 2) == 0)
+			{
+				id = val;
+			}
+			else if (strncmp(key, "payload", 7) == 0)
+			{
+				message = val;
+			}
+			else if (strncmp(key, "time_sent", 9) == 0)
+			{
+				time_sent = val;
+			}
+			else if (strncmp(key, "sleep_intv", 10) == 0)
+			{
+				sleep(atoi(val) / 1000.0);
+			}
+
+			request_query = strtok_r(NULL, "&", &save_ptr_3);
+		}
+
+		int length = snprintf(NULL, 0, "{\"id\": \"%s\", \"time_sent\": %s, \"message\": \"%s\", \"time_recv\": %lu}", id, time_sent, message, time_recv);
+		char *payload = malloc(length + 1);
+		snprintf(payload, length + 1, "{\"id\": \"%s\", \"time_sent\": %s, \"message\": \"%s\", \"time_recv\": %lu}", id, time_sent, message, time_recv);
+
+		length = snprintf(NULL, 0, "HTTP/1.1 200 OK\nConnection: keep-alive\nKeep-Alive: timeout=30\nContent-Type: application/json\nContent-Length: %lu\n\n%s", strlen(payload), payload);
+		char *response = malloc(length + 1);
+		snprintf(response, length + 1, "HTTP/1.1 200 OK\nConnection: keep-alive\nKeep-Alive: timeout=30\nContent-Type: application/json\nContent-Length: %lu\n\n%s", strlen(payload), payload);
+		write(socket, response, strlen(response));
+		free(response);
+		free(payload);
+		
 	}
-
-	int length = snprintf(NULL, 0, "{\"id\": \"%s\", \"time_sent\": %s, \"message\": \"%s\", \"time_recv\": %lu}", id, time_sent, message, time_recv);
-	char *payload = malloc(length + 1);
-	snprintf(payload, length + 1, "{\"id\": \"%s\", \"time_sent\": %s, \"message\": \"%s\", \"time_recv\": %lu}", id, time_sent, message, time_recv);
-
-	length = snprintf(NULL, 0, "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: %lu\n\n%s", strlen(payload), payload);
-	char *response = malloc(length + 1);
-	snprintf(response, length + 1, "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: %lu\n\n%s", strlen(payload), payload);
-	write(socket, response, strlen(response));
-	close(socket);
-	free(response);
-	free(payload);
-	free(socket_args);
-
-	return NULL;
 }
 
 int main(int agrc, char const *argv[])
