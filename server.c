@@ -14,6 +14,10 @@ struct thread_args {
 	int socket;
 };
 
+#ifndef TCP_KEEPALIVE
+	#define TCP_KEEPALIVE TCP_KEEPIDLE
+#endif
+
 #define check(expr) if (!(expr)) { perror(#expr); exit(EXIT_FAILURE); }
 
 void enable_keepalive(int sock) {
